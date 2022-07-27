@@ -12,6 +12,8 @@ from data_loader import get_loader
 from utils import get_model_input_from_loader
 import csv
 import argparse
+from utils import *
+import clip
 
 
 def main(config):
@@ -33,12 +35,17 @@ def main(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     unet.to(device)
 
+    # setup CLIP model
+    clip, clip_preprocess = clip.load(config.clip_variant, device=device)
+
     # train loop
     for epoch in range(config.num_epochs):
         unet.train(True)
-        for curr_iter, (bg, bg_norm, mask, ped) in enumerate(train_loader):
+        for curr_iter, (bg, bg_norm, ped, combined_mask, all_masks) in enumerate(
+            train_loader
+        ):
             # prepare input for model
-            model_input = get_model_input_from_loader(bg_norm, mask, ped)
+            model_input = get_model_input_from_loader(bg_norm, combined_mask, ped)
             model_input = model_input.to(device)
 
             # forward pass
@@ -46,17 +53,50 @@ def main(config):
 
             # compute losses
             # background data consistency loss
-            bg_dc_loss = bg_dc_criterion(out, bg) * (~mask.bool()).float()
+            bg_dc_loss = bg_dc_criterion(out, bg) * (~combined_mask.bool()).float()
             bg_dc_loss = torch.mean(bg_dc_loss)
 
-            # clip cosine similarity loss
-            # TODO: Implement CLIP cosine similarity loss based on patch
+            # CLIP similarity loss
             clip_sim_loss = 0
+            for iter in range(all_masks.shape[0]):
+                for ped_mask in all_masks[iter]:
+                    # get bounding box around target object
+                    bbox_vals = bbox_from_mask_torch(ped_mask)
+                    # expand bounding box to desired patch size
+                    bbox_vals = enforce_bbox_size(
+                        ped_mask.shape,
+                        *bbox_vals,
+                        min_width=config.clip_patch_size,
+                        min_height=config.clip_patch_size
+                    )
+                    ymin, ymax, xmin, xmax = bbox_vals
+
+                    # TODO: Add random transforms to compute average CLIP similarity for more robust convergence.
+                    # TODO: Add pedestrian background change options
+
+                    # encode model output patch as CLIP embedding
+                    merged_patch = out[iter, ymin:ymax, xmin:xmax]
+                    enc_merged_patch = clip_preprocess(merged_patch)
+                    enc_merged_patch = enc_merged_patch.unsqueeze(0).to(device)
+                    enc_merged_patch = clip.encode_image(enc_merged_patch)
+
+                    # encode pedestrian patch as CLIP embedding
+                    synth_patch = ped[iter, ymin:ymax, xmin:xmax]
+                    enc_synth_patch = clip_preprocess(synth_patch)
+                    enc_synth_patch = enc_synth_patch.unsqueeze(0).to(device)
+                    enc_synth_patch = clip.encode_image(enc_synth_patch)
+
+                    clip_sim_loss += 1 - clip_sim_criterion(
+                        enc_merged_patch, enc_synth_patch
+                    )
+            # Normalize CLIP similarity loss to number of patches
+            clip_sim_loss /= all_masks.shape[1]
 
             loss = bg_dc_loss + clip_sim_loss
 
             # backprop + optimize
             unet.zero_grad()
+            clip.zero_grad()
             loss.backward()
             optimizer.step()
 
@@ -72,7 +112,8 @@ if __name__ == "main":
     parser = argparse.ArgumentParser()
 
     # Model Hyper-parameters
-    parser.add_argument("--image_size", type=int, default=224)
+    # parser.add_argument("--image_size", type=int, default=224)
+    parser.add_argument("--clip_variant", type=str, default="ViT-B/32")
 
     # Training Hyper-parameters
     parser.add_argument("--num_epochs", type=int, default=100)
@@ -81,6 +122,9 @@ if __name__ == "main":
     parser.add_argument("--lr", type=float, default=0.0002)
     parser.add_argument("--beta1", type=float, default=0.5)  # momentum1 in Adam
     parser.add_argument("--beta2", type=float, default=0.999)  # momentum2 in Adam
+
+    # Custom ML hyper-parameters
+    parser.add_argument("--clip_patch_size", type=int, default=128)
 
     # Data
 

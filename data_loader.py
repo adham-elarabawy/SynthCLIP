@@ -9,15 +9,16 @@ from torchvision import transforms as T
 from torchvision.transforms import functional as F
 from PIL import Image
 import random
+from utils import *
 
 
 class ImageFolder(data.Dataset):
     def __init__(self, config):
         """Initializes image paths and preprocessing module."""
 
-        self.bg_dir = config.bg_dir
-        self.ped_dir = config.ped_dir
-        self.mask_dir = config.mask_dir
+        self.bg_dir = "exp/bg"  # config.bg_dir
+        self.ped_dir = "exp/ped"  # config.ped_dir
+        self.mask_dir = "exp/mask"  # config.mask_dir
 
         # fmt: off
         self.bg_paths = sorted(list(map(lambda x: os.path.join(self.bg_dir, x), os.listdir(self.bg_dir))))
@@ -45,11 +46,11 @@ class ImageFolder(data.Dataset):
             ]
         )
 
-        self.flip = config.flip  # prob of horizontally flipping inputs
-        self.bg_jitter_b = config.bg_jitter_b  # how much to jitter bg brightness
-        self.bg_jitter_c = config.bg_jitter_c  # how much to jitter bg contrast
-        self.bg_jitter_s = config.bg_jitter_s  # how much to jitter bg saturation
-        self.bg_jitter_h = config.bg_jitter_h  # how much to jitter bg hue
+        self.flip = 0  # config.flip  # prob of horizontally flipping inputs
+        self.bg_jitter_b = 0  # config.bg_jitter_b  # how much to jitter bg brightness
+        self.bg_jitter_c = 0  # config.bg_jitter_c  # how much to jitter bg contrast
+        self.bg_jitter_s = 0  # config.bg_jitter_s  # how much to jitter bg saturation
+        self.bg_jitter_h = 0  # config.bg_jitter_h  # how much to jitter bg hue
 
         # self.image_size = image_size
         print(f"Successfully initialized dataset of size: {self.total}.")
@@ -89,7 +90,7 @@ class ImageFolder(data.Dataset):
         # construct ped-specific transform
         ped_transform = base_transform.copy()
 
-        # construct mask-specific transform
+        # construct combined_mask-specific transform
         mask_transform = base_transform.copy()
 
         def squish_colormask(colormask):
@@ -106,6 +107,17 @@ class ImageFolder(data.Dataset):
 
         mask_transform.append(T.Lambda(squish_colormask))
 
+        # get distinct masks from colormask
+        colors = im_mask.getcolors()
+        colors = [color for count, color in colors if color != (0, 0, 0)]
+        ped_masks = torch.zeros((len(colors), im_mask.size[1], im_mask.size[0]))
+        for i, color in enumerate(colors):
+            bool_mask = mask_from_rgb_threshold(color, np.array(im_mask)[:, :, :3])
+            bool_mask = torch.from_numpy(bool_mask)
+            ped_mask = torch.zeros_like(bool_mask, dtype=torch.float)
+            ped_mask[bool_mask] = 1
+            ped_masks[i] = ped_mask
+
         # compose transforms
         bg_transform = T.Compose(bg_transform)
         bg_norm_transform = T.Compose(
@@ -118,9 +130,10 @@ class ImageFolder(data.Dataset):
         bg = bg_transform(im_bg)
         bg_norm = bg_norm_transform(bg)
         ped = ped_transform(im_ped)
-        mask = mask_transform(im_mask)
+        combined_mask = mask_transform(im_mask)
+        all_masks = ped_masks
 
-        return bg, bg_norm, mask, ped
+        return bg, bg_norm, ped, combined_mask, all_masks
 
     def __len__(self):
         """Returns the total number of files."""
