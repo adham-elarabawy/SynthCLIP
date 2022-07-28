@@ -16,9 +16,9 @@ class ImageFolder(data.Dataset):
     def __init__(self, config):
         """Initializes image paths and preprocessing module."""
 
-        self.bg_dir = "exp/bg"  # config.bg_dir
-        self.ped_dir = "exp/ped"  # config.ped_dir
-        self.mask_dir = "exp/mask"  # config.mask_dir
+        self.bg_dir = config.bg_dir
+        self.ped_dir = config.ped_dir
+        self.mask_dir = config.mask_dir
 
         # fmt: off
         self.bg_paths = sorted(list(map(lambda x: os.path.join(self.bg_dir, x), os.listdir(self.bg_dir))))
@@ -46,11 +46,11 @@ class ImageFolder(data.Dataset):
             ]
         )
 
-        self.flip = 0  # config.flip  # prob of horizontally flipping inputs
-        self.bg_jitter_b = 0  # config.bg_jitter_b  # how much to jitter bg brightness
-        self.bg_jitter_c = 0  # config.bg_jitter_c  # how much to jitter bg contrast
-        self.bg_jitter_s = 0  # config.bg_jitter_s  # how much to jitter bg saturation
-        self.bg_jitter_h = 0  # config.bg_jitter_h  # how much to jitter bg hue
+        self.flip = config.flip  # prob of horizontally flipping inputs
+        self.bg_jitter_b = config.bg_jitter_b  # how much to jitter bg brightness
+        self.bg_jitter_c = config.bg_jitter_c  # how much to jitter bg contrast
+        self.bg_jitter_s = config.bg_jitter_s  # how much to jitter bg saturation
+        self.bg_jitter_h = config.bg_jitter_h  # how much to jitter bg hue
 
         # self.image_size = image_size
         print(f"Successfully initialized dataset of size: {self.total}.")
