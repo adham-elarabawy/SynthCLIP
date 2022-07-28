@@ -63,6 +63,9 @@ class ImageFolder(data.Dataset):
         ped_path = self.ped_paths[index]
         mask_path = self.mask_paths[index]
 
+        # get basename
+        basename = os.path.basename(bg_path).split(".")[0]
+
         # load pipeline inputs as images
         im_bg = Image.open(bg_path).convert("RGB")
         im_ped = Image.open(ped_path).convert("RGB")
@@ -133,7 +136,7 @@ class ImageFolder(data.Dataset):
         combined_mask = mask_transform(im_mask)
         all_masks = ped_masks
 
-        return bg, bg_norm, ped, combined_mask, all_masks
+        return basename, bg, bg_norm, ped, combined_mask, all_masks
 
     def __len__(self):
         """Returns the total number of files."""

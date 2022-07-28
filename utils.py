@@ -6,6 +6,18 @@ def get_model_input_from_loader(bg_norm, mask, ped):
     return torch.cat(bg_norm, mask, ped, dim=0)
 
 
+def make_safe_filename(s):
+    rep_char = "-"
+
+    def safe_char(c):
+        if c.isalnum():
+            return c
+        else:
+            return rep_char
+
+    return "".join(safe_char(c) for c in s).rstrip(rep_char)
+
+
 def bbox_from_mask_torch(ped_mask):
     y, x = torch.where(ped_mask != 0)
     xmin = torch.min(x)
