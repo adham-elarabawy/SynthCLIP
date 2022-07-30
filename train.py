@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import time
-import datetime
 import torch
 import torchvision
 from torch import optim
@@ -11,10 +10,9 @@ import torch.nn.functional as F
 from network import AttU_Net
 from data_loader import get_loader
 from utils import get_model_input_from_loader
-import csv
 import argparse
 from utils import *
-import clip
+import clip as clip_api
 import mlflow
 
 
@@ -35,7 +33,7 @@ def main(config):
         mlflow.log_params(vars(config))
 
         # setup logging dir
-        run_dir = os.path.join("checkpoints", config.run_name)
+        run_dir = os.path.join("checkpoints", config.name)
         os.makedirs(run_dir, exist_ok=False)
         img_dir = os.path.join(run_dir, "img")
         os.makedirs(img_dir, exist_ok=False)
@@ -44,7 +42,7 @@ def main(config):
         train_loader = get_loader(config, config.batch_size)
 
         # setup model
-        unet = AttU_Net(img_ch=5, output_ch=3)
+        unet = AttU_Net(img_ch=7, output_ch=3)
         optimizer = optim.Adam(
             list(unet.parameters()),
             lr=config.lr,
@@ -65,7 +63,7 @@ def main(config):
         unet.to(device)
 
         # setup CLIP model
-        clip, clip_preprocess = clip.load(config.clip_variant, device=device)
+        clip, clip_preprocess = clip_api.load(config.clip_variant, device=device)
 
         # train loop
         for epoch in range(config.num_epochs):
@@ -175,12 +173,13 @@ def main(config):
                 torch.save(state, os.path.join(run_dir, f"epoch{epoch}_model.pth"))
 
 
-if __name__ == "main":
+if __name__ == "__main__":
     # fmt: off
     parser = argparse.ArgumentParser()
 
     # Model Hyper-parameters
     # parser.add_argument("--image_size", type=int, default=224)
+    parser.add_argument("--name", type=str, required=True)
     parser.add_argument("--clip_variant", type=str, default="ViT-B/32")
 
     # Training Hyper-parameters
@@ -194,19 +193,20 @@ if __name__ == "main":
     parser.add_argument("--lr_scheduler_gamma", type=float, default=0.99)
 
     # Custom ML hyper-parameters
+    parser.add_argument("--bg_load_size", type=int, default=256)
     parser.add_argument("--clip_patch_size", type=int, default=128)
     parser.add_argument("--bg_dc_criterion", type=str, default="L2", help="L1|L2")
 
     # Data
 
     # if passing in directories of paired background/pedestrians/masks
-    parser.add_argument("--bg_dir",type=str,help="Path to directory containing (paired) background images.")
-    parser.add_argument("--ped_dir",type=str,help="Path to directory containing (paired) synthetic pedestrian images.")
-    parser.add_argument("--mask_dir",type=str,help="Path to directory containing (paired) pedestrian masks.")
+    parser.add_argument("--bg_dir", type=str, required=True, help="Path to directory containing (paired) background images.")
+    parser.add_argument("--ped_dir", type=str, required=True, help="Path to directory containing (paired) synthetic pedestrian images.")
+    parser.add_argument("--mask_dir", type=str, required=True, help="Path to directory containing (paired) pedestrian masks.")
     parser.add_argument("--num_workers", type=int, default=8)
 
     # Data Loading
-    parser.add_arugment("--flip", type=float, default=0.5, help="[0, 1] Probability that random inputs get horizontally flipped.")
+    parser.add_argument("--flip", type=float, default=0.5, help="[0, 1] Probability that random inputs get horizontally flipped.")
     parser.add_argument("--bg_jitter_b", type=float, default=0.3, help="[0, 1] How much to randomly jitter background brightness.")
     parser.add_argument("--bg_jitter_c", type=float, default=0.3, help="[0, 1] How much to randomly jitter background contrast.")
     parser.add_argument("--bg_jitter_s", type=float, default=0.3, help="[0, 1] How much to randomly jitter background saturation.")
@@ -225,5 +225,9 @@ if __name__ == "main":
     parser.add_argument("--vis_freq", type=int, default=100) # iter
     parser.add_argument("--save_freq", type=int, default=5) # epoch
 
+    parser.add_argument("--mlflow_tracking_uri", type=str, default=None)
+
     # fmt: on
     config = parser.parse_args()
+
+    main(config)

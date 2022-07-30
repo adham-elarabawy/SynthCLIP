@@ -3,7 +3,7 @@ import numpy as np
 
 
 def get_model_input_from_loader(bg_norm, mask, ped):
-    return torch.cat(bg_norm, mask, ped, dim=0)
+    return torch.cat([bg_norm, mask, ped], dim=1)
 
 
 def make_safe_filename(s):
@@ -69,3 +69,35 @@ def mask_from_rgb_threshold(rgb, arr_im):
     idx = (arr_im[..., :3] == np.array(rgb)).all(axis=-1)
     mask[idx] = True
     return mask
+
+
+def mask_from_rgb_target(rgb_target, arr_im, colors, dist_threshold=15):
+    """Returns a boolean (binary) mask that is
+    True for pixels in the image that are the
+    same color as the rgb param.
+    """
+
+    def dist_from_target(rgb_color):
+        r, g, b = rgb_color
+        rt, gt, bt = rgb_target
+        dist = abs(rt - r) + abs(gt - g) + abs(bt - b)
+        return dist
+
+    rem_colors = [
+        color for color in colors if dist_from_target(color) <= dist_threshold
+    ]
+
+    mask = np.full(arr_im.shape[:2], False)
+
+    for color in rem_colors:
+        idx = (arr_im[..., :3] == np.array(color)).all(axis=-1)
+        mask[idx] = True
+    return mask
+
+
+def get_unique_colors(arr_im):
+    return np.unique(arr_im.reshape(-1, arr_im.shape[-1]), axis=0, return_counts=False)
+
+
+# HWC
+# CHW

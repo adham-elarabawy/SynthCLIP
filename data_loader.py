@@ -1,3 +1,4 @@
+from configparser import Interpolation
 import os
 import random
 from random import shuffle
@@ -10,6 +11,8 @@ from torchvision.transforms import functional as F
 from PIL import Image
 import random
 from utils import *
+import albumentations as A
+import cv2
 
 
 class ImageFolder(data.Dataset):
@@ -26,25 +29,7 @@ class ImageFolder(data.Dataset):
         self.mask_paths = sorted(list(map(lambda x: os.path.join(self.mask_dir, x), os.listdir(self.mask_dir))))
         # fmt: on
 
-        self.total = len(self.bg_paths)
-
-        # assert length of paths is the same
-        assert (
-            self.total
-            == len(self.bg_paths)
-            == len(self.ped_paths)
-            == len(self.mask_paths)
-        )
-
-        # assert all paired paths have same filenames
-        assert all(
-            [
-                os.path.basename(self.bg_paths[i])
-                == os.path.basename(self.ped_paths[i])
-                == os.path.basename(self.mask_paths[i])
-                for i in range(self.total)
-            ]
-        )
+        self.total = len(self.ped_paths)
 
         self.flip = config.flip  # prob of horizontally flipping inputs
         self.bg_jitter_b = config.bg_jitter_b  # how much to jitter bg brightness
@@ -52,14 +37,15 @@ class ImageFolder(data.Dataset):
         self.bg_jitter_s = config.bg_jitter_s  # how much to jitter bg saturation
         self.bg_jitter_h = config.bg_jitter_h  # how much to jitter bg hue
 
-        # self.image_size = image_size
+        self.bg_size = config.bg_load_size
+
         print(f"Successfully initialized dataset of size: {self.total}.")
 
     def __getitem__(self, index):
         """Reads an image from a file and preprocesses it and returns."""
 
         # get pipeline input paths
-        bg_path = self.bg_paths[index]
+        bg_path = random.choice(self.bg_paths)
         ped_path = self.ped_paths[index]
         mask_path = self.mask_paths[index]
 
@@ -67,76 +53,121 @@ class ImageFolder(data.Dataset):
         basename = os.path.basename(bg_path).split(".")[0]
 
         # load pipeline inputs as images
-        im_bg = Image.open(bg_path).convert("RGB")
-        im_ped = Image.open(ped_path).convert("RGB")
-        im_mask = Image.open(mask_path).convert("RGB")
+        im_bg = cv2.imread(bg_path)
+        im_ped = cv2.imread(ped_path)
+        im_mask = cv2.imread(mask_path)
 
-        # construct base transform
-        base_transform = []
-        base_transform.append(T.PILToTensor())
-        base_transform.append(T.ConvertImageDtype(dtype=torch.float))
+        im_bg = cv2.cvtColor(im_bg, cv2.COLOR_BGR2RGB)
+        im_ped = cv2.cvtColor(im_ped, cv2.COLOR_BGR2RGB)
+        im_mask = cv2.cvtColor(im_mask, cv2.COLOR_BGR2RGB)
 
-        if random.random() < self.flip:
-            base_transform.append(T.RandomHorizontalFlip(1))
-
-        # construct bg-specific transform
-        bg_transform = base_transform.copy()
+        bg_transform = []
         bg_transform.append(
-            T.ColorJitter(
+            A.RandomResizedCrop(
+                height=self.bg_size,
+                width=self.bg_size,
+                scale=(0.5, 1),
+                ratio=(0.75, 1.33),
+                p=1,
+            )
+        )
+        bg_transform.append(A.HorizontalFlip(self.flip))
+        bg_transform.append(
+            A.ColorJitter(
                 brightness=self.bg_jitter_b,
                 contrast=self.bg_jitter_c,
                 saturation=self.bg_jitter_s,
                 hue=self.bg_jitter_h,
+                p=0.5,
+            )
+        )
+        bg_transform.append(A.ToTensorV2())
+
+
+        ped_transform = []
+        ped_scale = random.uniform(0.2, 1.8)
+        if ped_scale <= 1:
+            new_size = (1 / ped_scale) * max(*im_ped.shape[:2])
+            ped_transform.append(
+                A.PadIfNeeded(
+                    min_height=new_size,
+                    min_width=new_size,
+                    position_type="random",
+                    border_mode=cv2.BORDER_REPLICATE
+                )
+            )
+        elif ped_scale < 1:
+            new_size = (1 / ped_scale) * max(*im_ped.shape[:2])
+            ped_transform.append(A.RandomCrop(height=new_size, width=new_size))
+
+        ped_transform.append(A.Resize(height=self.bg_size, height=self.bg_size))
+        ped_transform.append(A.HorizontalFlip(self.flip))
+        ped_transform.append(A.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+                max_pixel_value=255.0, 
+                p=1.0))
+
+        norm_transform = []
+        norm_transform.append(
+            A.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+                max_pixel_value=255.0,
+                p=1.0,
             )
         )
 
-        # construct ped-specific transform
-        ped_transform = base_transform.copy()
+        torch_transform = []
+        torch_transform.append(A.ToTensorV2())
 
-        # construct combined_mask-specific transform
-        mask_transform = base_transform.copy()
+            #     def squish_colormask(colormask):
+            # colormask = torch.sum(
+            #     colormask, dim=0, keepdim=True
+            # )  # average across rgb channels
+            # obj_ids = torch.unique(colormask)  # get unique values in mask
+            # obj_ids = obj_ids[obj_ids != 0]
+            # masks = colormask == obj_ids[:, None, None]
+            # bool_mask = torch.any(masks, dim=0, keepdim=True)
+            # out = torch.zeros_like(bool_mask, dtype=torch.float)
+            # out[bool_mask] = 1
+            # return out
 
-        def squish_colormask(colormask):
-            colormask = torch.sum(
-                colormask, dim=0, keepdim=True
-            )  # average across rgb channels
-            obj_ids = torch.unique(colormask)  # get unique values in mask
-            obj_ids = obj_ids[obj_ids != 0]
-            masks = colormask == obj_ids[:, None, None]
-            bool_mask = torch.any(masks, dim=0, keepdim=True)
-            out = torch.zeros_like(bool_mask, dtype=torch.float)
-            out[bool_mask] = 1
-            return out
+        # compose transforms
+        bg_transform = A.Compose(bg_transform)
+        ped_transform = A.Compose(ped_transform)
+        norm_transform = A.Compose(norm_transform)
+        torch_transform = A.Compose(torch_transform)
 
-        mask_transform.append(T.Lambda(squish_colormask))
+        # apply transforms
+        bg = bg_transform(image=im_bg)['image'] # unnormalized, tensor
+        bg_norm = norm_transform(bg) # normalized, tensor
+        ped_out = ped_transform(image=im_ped, image=im_mask)
+        ped = ped_out['image'] # normalized, arr
+        colormask = ped_out['mask'] # unnormalized, arr
 
         # get distinct masks from colormask
-        colors = im_mask.getcolors()
-        colors = [color for count, color in colors if color != (0, 0, 0)]
-        ped_masks = torch.zeros((len(colors), im_mask.size[1], im_mask.size[0]))
+        colors = get_unique_colors(colormask)
+        colors = colors[np.sum(colors, axis = 1) != 0]
+        ped_masks = torch.zeros((len(colors), im_mask.shape[0], im_mask.shape[1]))
+        combined_mask = torch.zeros((1, im_mask.shape[0], im_mask.shape[1]))
         for i, color in enumerate(colors):
             bool_mask = mask_from_rgb_threshold(color, np.array(im_mask)[:, :, :3])
             bool_mask = torch.from_numpy(bool_mask)
             ped_mask = torch.zeros_like(bool_mask, dtype=torch.float)
             ped_mask[bool_mask] = 1
+            combined_mask[bool_mask] = 1
             ped_masks[i] = ped_mask
 
-        # compose transforms
-        bg_transform = T.Compose(bg_transform)
-        bg_norm_transform = T.Compose(
-            [T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])]
-        )
-        ped_transform = T.Compose(ped_transform)
-        mask_transform = T.Compose(mask_transform)
 
-        # apply transforms
-        bg = bg_transform(im_bg)
-        bg_norm = bg_norm_transform(bg)
-        ped = ped_transform(im_ped)
-        combined_mask = mask_transform(im_mask)
-        all_masks = ped_masks
 
-        return basename, bg, bg_norm, ped, combined_mask, all_masks
+        bg = bg # unnormalized tensor
+        bg_norm = norm_transform(bg) # normalized tensor
+        ped = torch_transform(ped) # normalized tensor
+        combined_mask = combined_mask # unnormalized tensor
+        all_masks = ped_mask # unnormalized tensor
+
+        return bg, bg_norm, ped, combined_mask, all_masks
 
     def __len__(self):
         """Returns the total number of files."""
