@@ -7,7 +7,8 @@ from torch import optim
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import ExponentialLR
 import torch.nn.functional as F
-from network import AttU_Net
+from torchvision.transforms import functional as FUNC
+from network import AttU_Net, U_Net
 from data_loader import get_loader
 from utils import get_model_input_from_loader
 import argparse
@@ -18,7 +19,7 @@ import mlflow
 
 def main(config):
     # setup config params
-
+    torch.autograd.set_detect_anomaly(True)
     if config.mlflow_tracking_uri:
         mlflow.set_tracking_uri(uri=config.mlflow_tracking_uri)
     else:
@@ -27,22 +28,37 @@ def main(config):
 
     mlflow.set_experiment(experiment_name="synthclip")
 
-    with mlflow.start_run() as run:
+    if config.resume:
+        assert config.resume_id and config.resume_checkpoint
+        run_id = config.resume_id
+        run = mlflow.start_run(run_id=run_id)
+    else:
+        run = mlflow.start_run()
 
+    with run:
         # log run parameters to mlflow
-        mlflow.log_params(vars(config))
+        if not config.resume:
+            mlflow.log_params(vars(config))
 
         # setup logging dir
         run_dir = os.path.join("checkpoints", config.name)
-        os.makedirs(run_dir, exist_ok=False)
         img_dir = os.path.join(run_dir, "img")
-        os.makedirs(img_dir, exist_ok=False)
+        os.makedirs(run_dir, exist_ok=config.resume)
+        os.makedirs(img_dir, exist_ok=config.resume)
 
         # setup dataloaders
         train_loader = get_loader(config, config.batch_size)
 
         # setup model
-        unet = AttU_Net(img_ch=7, output_ch=3)
+        in_ch = 7
+        out_ch = 3
+        if config.model_type == "AttU_Net":
+            print(f"Using Attention UNet.")
+            unet = AttU_Net(img_ch=in_ch, output_ch=out_ch)
+        if config.model_type == "U_Net":
+            print(f"Using Vanilla UNet.")
+            unet = U_Net(img_ch=in_ch, output_ch=out_ch)
+
         optimizer = optim.Adam(
             list(unet.parameters()),
             lr=config.lr,
@@ -60,16 +76,16 @@ def main(config):
 
         # prepare for computation
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        unet.to(device)
+        unet = unet.to(device)
 
         # setup CLIP model
-        clip, clip_preprocess = clip_api.load(config.clip_variant, device=device)
+        clip, _ = clip_api.load(config.clip_variant, device=device)
+        clip_preprocess = clip_preprocess_maker(clip.visual.input_resolution)
 
         # train loop
         for epoch in range(config.num_epochs):
             unet.train(True)
             for curr_iter, (
-                basename,
                 bg,
                 bg_norm,
                 ped,
@@ -79,6 +95,10 @@ def main(config):
                 total_iter = epoch * len(train_loader) + curr_iter
 
                 # prepare input for model
+                bg = bg.to(device)
+                bg_norm = bg_norm.to(device)
+                combined_mask = combined_mask.to(device)
+                ped = ped.to(device)
                 model_input = get_model_input_from_loader(bg_norm, combined_mask, ped)
                 model_input = model_input.to(device)
 
@@ -87,8 +107,11 @@ def main(config):
 
                 # compute losses
                 # background data consistency loss
-                bg_dc_loss = bg_dc_criterion(out, bg) * (~combined_mask.bool()).float()
+                bg_dc_loss = (
+                    bg_dc_criterion(out, bg.float()) * (~combined_mask.bool()).float()
+                )
                 bg_dc_loss = torch.mean(bg_dc_loss)
+                bg_dc_loss /= config.bg_dc_loss_suppression
 
                 # CLIP similarity loss
                 clip_sim_loss = 0
@@ -110,13 +133,13 @@ def main(config):
                         # TODO: Add pedestrian background change options
 
                         # encode model output patch as CLIP embedding
-                        merged_patch = out[iter, ymin:ymax, xmin:xmax]
+                        merged_patch = out[iter, :, ymin:ymax, xmin:xmax]
                         enc_merged_patch = clip_preprocess(merged_patch)
                         enc_merged_patch = enc_merged_patch.unsqueeze(0).to(device)
                         enc_merged_patch = clip.encode_image(enc_merged_patch)
 
                         # encode pedestrian patch as CLIP embedding
-                        synth_patch = ped[iter, ymin:ymax, xmin:xmax]
+                        synth_patch = ped[iter, :, ymin:ymax, xmin:xmax]
                         enc_synth_patch = clip_preprocess(synth_patch)
                         enc_synth_patch = enc_synth_patch.unsqueeze(0).to(device)
                         enc_synth_patch = clip.encode_image(enc_synth_patch)
@@ -126,6 +149,7 @@ def main(config):
                         )
                 # normalize CLIP similarity loss to number of patches
                 clip_sim_loss /= all_masks.shape[1]
+                clip_sim_loss *= config.clip_loss_scaling
 
                 # compute full loss
                 loss = bg_dc_loss + clip_sim_loss
@@ -139,25 +163,27 @@ def main(config):
                 # print losses and log to dashboards
                 iter_end_time = time.time()
                 if total_iter % config.log_freq == 0:
-                    message = f"[epoch {epoch}|curr_iter {curr_iter}|iter time {iter_end_time - iter_start_time}] - loss {loss}|bg_dc_loss {bg_dc_loss}|clip_sim_loss {clip_sim_loss}"
+                    message = f"[epoch {epoch}|curr_iter {curr_iter}|iter time {round(iter_end_time - iter_start_time, 3)}] - loss {round(loss.item(), 3)}|bg_dc_loss {round(bg_dc_loss.item(), 3)}|clip_sim_loss {round(clip_sim_loss.item(), 3)}"
                     print(message)
 
-                    mlflow.log_metric("bg_dc_loss", bg_dc_loss, step=total_iter)
-                    mlflow.log_metric("clip_im_loss", clip_sim_loss, step=total_iter)
-                    mlflow.log_metric("loss", loss, step=total_iter)
+                    mlflow.log_metric("bg_dc_loss", bg_dc_loss.item(), step=total_iter)
+                    mlflow.log_metric(
+                        "clip_im_loss", clip_sim_loss.item(), step=total_iter
+                    )
+                    mlflow.log_metric("loss", loss.item(), step=total_iter)
 
                 # save sample train images and TODO: upload to dashboards
                 if total_iter % config.vis_freq == 0:
-                    im_out = F.to_pil_image(out[0, :, :, :])
-                    im_bg = F.to_pil_image(bg[0, :, :, :])
-                    im_mask = F.to_pil_image(combined_mask[0, :, :, :])
-                    im_ped = F.to_pil_image(ped[0, :, :, :])
+                    im_out = FUNC.to_pil_image(out[0, :, :, :])
+                    im_bg = FUNC.to_pil_image(bg[0, :, :, :])
+                    im_mask = FUNC.to_pil_image(combined_mask[0, :, :, :])
+                    im_ped = FUNC.to_pil_image(ped[0, :, :, :])
 
                     # fmt: off
-                    im_out.save(os.path.join(img_dir, f"epoch{epoch}_" + basename[0] + "_out.png"))
-                    im_bg.save(os.path.join(img_dir, f"epoch{epoch}_" + basename[0] + "_bg.png"))
-                    im_mask.save(os.path.join(img_dir, f"epoch{epoch}_" + basename[0] + "_mask.png"))
-                    im_ped.save(os.path.join(img_dir, f"epoch{epoch}_" + basename[0] + "_ped.png"))
+                    im_out.save(os.path.join(img_dir, f"epoch{epoch}_out.png"))
+                    im_bg.save(os.path.join(img_dir, f"epoch{epoch}_bg.png"))
+                    im_mask.save(os.path.join(img_dir, f"epoch{epoch}_mask.png"))
+                    im_ped.save(os.path.join(img_dir, f"epoch{epoch}_ped.png"))
                     # fmt: on
 
             # update learning rate
@@ -167,7 +193,8 @@ def main(config):
                 state = {
                     "epoch": epoch,
                     "model_state_dict": unet.state_dict(),
-                    "optimizer_state_dict": optimizer.stat_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
                     "loss": loss,
                 }
                 torch.save(state, os.path.join(run_dir, f"epoch{epoch}_model.pth"))
@@ -192,10 +219,16 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--lr_scheduler_gamma", type=float, default=0.99)
 
+    parser.add_argument("--resume", action='store_true')
+    parser.add_argument("--resume_id", type=str)
+    parser.add_argument("--resume_checkpoint", type=str)
+
     # Custom ML hyper-parameters
     parser.add_argument("--bg_load_size", type=int, default=256)
     parser.add_argument("--clip_patch_size", type=int, default=128)
     parser.add_argument("--bg_dc_criterion", type=str, default="L2", help="L1|L2")
+    parser.add_argument("--bg_dc_loss_suppression", type=float, default=2500)
+    parser.add_argument("--clip_loss_scaling", type=float, default=10)
 
     # Data
 
@@ -222,7 +255,7 @@ if __name__ == "__main__":
 
     # Logging params 
     parser.add_argument("--log_freq", type=int, default=100) # iter
-    parser.add_argument("--vis_freq", type=int, default=100) # iter
+    parser.add_argument("--vis_freq", type=int, default=1000) # iter
     parser.add_argument("--save_freq", type=int, default=5) # epoch
 
     parser.add_argument("--mlflow_tracking_uri", type=str, default=None)
