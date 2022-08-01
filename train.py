@@ -8,7 +8,7 @@ from torch.autograd import Variable
 from torch.optim.lr_scheduler import ExponentialLR
 import torch.nn.functional as F
 from torchvision.transforms import functional as FUNC
-from network import AttU_Net, U_Net
+from network import AttU_Net, U_Net, UnetGenerator, init_weights
 from data_loader import get_loader
 from utils import get_model_input_from_loader
 import argparse
@@ -55,9 +55,15 @@ def main(config):
         if config.model_type == "AttU_Net":
             print(f"Using Attention UNet.")
             unet = AttU_Net(img_ch=in_ch, output_ch=out_ch)
+            init_weights(unet)
         if config.model_type == "U_Net":
             print(f"Using Vanilla UNet.")
             unet = U_Net(img_ch=in_ch, output_ch=out_ch)
+            init_weights(unet)
+        if config.model_type == "old_unet":
+            print("using old unet")
+            unet = UnetGenerator(in_ch, out_ch, 8, use_dropout=False)
+            init_weights(unet)
 
         optimizer = optim.Adam(
             list(unet.parameters()),
@@ -108,10 +114,10 @@ def main(config):
                 # compute losses
                 # background data consistency loss
                 bg_dc_loss = (
-                    bg_dc_criterion(out, bg.float()) * (~combined_mask.bool()).float()
+                    bg_dc_criterion(out, bg / 255) * (~combined_mask.bool()).float()
                 )
                 bg_dc_loss = torch.mean(bg_dc_loss)
-                bg_dc_loss /= config.bg_dc_loss_suppression
+                bg_dc_loss *= config.bg_dc_scaling
 
                 # CLIP similarity loss
                 clip_sim_loss = 0
@@ -180,10 +186,10 @@ def main(config):
                     im_ped = FUNC.to_pil_image(ped[0, :, :, :])
 
                     # fmt: off
-                    im_out.save(os.path.join(img_dir, f"epoch{epoch}_out.png"))
-                    im_bg.save(os.path.join(img_dir, f"epoch{epoch}_bg.png"))
-                    im_mask.save(os.path.join(img_dir, f"epoch{epoch}_mask.png"))
-                    im_ped.save(os.path.join(img_dir, f"epoch{epoch}_ped.png"))
+                    im_out.save(os.path.join(img_dir, f"epoch{epoch}_out.jpg"))
+                    im_bg.save(os.path.join(img_dir, f"epoch{epoch}_bg.jpg"))
+                    im_mask.save(os.path.join(img_dir, f"epoch{epoch}_mask.jpg"))
+                    im_ped.save(os.path.join(img_dir, f"epoch{epoch}_ped.jpg"))
                     # fmt: on
 
             # update learning rate
@@ -227,8 +233,8 @@ if __name__ == "__main__":
     parser.add_argument("--bg_load_size", type=int, default=256)
     parser.add_argument("--clip_patch_size", type=int, default=128)
     parser.add_argument("--bg_dc_criterion", type=str, default="L2", help="L1|L2")
-    parser.add_argument("--bg_dc_loss_suppression", type=float, default=2500)
-    parser.add_argument("--clip_loss_scaling", type=float, default=10)
+    parser.add_argument("--bg_dc_scaling", type=float, default=20)
+    parser.add_argument("--clip_loss_scaling", type=float, default=1)
 
     # Data
 
@@ -244,7 +250,8 @@ if __name__ == "__main__":
     parser.add_argument("--bg_jitter_c", type=float, default=0.3, help="[0, 1] How much to randomly jitter background contrast.")
     parser.add_argument("--bg_jitter_s", type=float, default=0.3, help="[0, 1] How much to randomly jitter background saturation.")
     parser.add_argument("--bg_jitter_h", type=float, default=0.15, help="[0, 1] How much to randomly jitter background hue.")
-
+    parser.add_argument("--ped_scale_min", type=float, default=0.1)
+    parser.add_argument("--ped_scale_max", type=float, default=1.8)
 
     # Miscellanious
     parser.add_argument("--mode", type=str, default="train", help="train,test")

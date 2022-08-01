@@ -38,6 +38,9 @@ class ImageFolder(data.Dataset):
         self.bg_jitter_s = config.bg_jitter_s  # how much to jitter bg saturation
         self.bg_jitter_h = config.bg_jitter_h  # how much to jitter bg hue
 
+        self.ped_scale_min = config.ped_scale_min
+        self.ped_scale_max = config.ped_scale_max
+
         self.bg_size = config.bg_load_size
 
         print(f"Successfully initialized dataset of size: {self.total}.")
@@ -85,7 +88,7 @@ class ImageFolder(data.Dataset):
         # bg_transform.append(A.pytorch.ToTensorV2())
 
         ped_transform = []
-        ped_scale = random.uniform(0.1, 1.8)
+        ped_scale = random.uniform(self.ped_scale_min, self.ped_scale_max)
         if ped_scale <= 1:
             new_size = int((1 / ped_scale) * max(*im_ped.shape[:2]))
             ped_transform.append(
@@ -104,8 +107,8 @@ class ImageFolder(data.Dataset):
         ped_transform.append(A.HorizontalFlip(self.flip))
         ped_transform.append(
             A.Normalize(
-                mean=(0.485, 0.456, 0.406),
-                std=(0.229, 0.224, 0.225),
+                mean=(0.5, 0.5, 0.5),
+                std=(0.5, 0.5, 0.5),
                 max_pixel_value=255.0,
                 p=1.0,
             )
@@ -114,8 +117,8 @@ class ImageFolder(data.Dataset):
         norm_transform = []
         norm_transform.append(
             A.Normalize(
-                mean=(0.485, 0.456, 0.406),
-                std=(0.229, 0.224, 0.225),
+                mean=(0.5, 0.5, 0.5),
+                std=(0.5, 0.5, 0.5),
                 max_pixel_value=255.0,
                 p=1.0,
             )
