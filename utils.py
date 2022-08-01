@@ -1,5 +1,13 @@
 import torch
 import numpy as np
+import math
+from torchvision.transforms import (
+    Compose,
+    Resize,
+    CenterCrop,
+    ToTensor,
+    Normalize,
+)
 
 
 def get_model_input_from_loader(bg_norm, mask, ped):
@@ -28,19 +36,35 @@ def bbox_from_mask_torch(ped_mask):
     return ymin, ymax, xmin, xmax
 
 
+def bbox_from_mask_np(ped_mask):
+    y, x = np.where(ped_mask != 0)
+    xmin = np.min(x)
+    ymin = np.min(y)
+    xmax = np.max(x)
+    ymax = np.max(y)
+
+    return ymin, ymax, xmin, xmax
+
+
 def enforce_bbox_size(im_shape, rmin, rmax, cmin, cmax, min_width=250, min_height=250):
     rpadding = 0
     cpadding = 0
+    rmin_padding = 0
+    cmin_padding = 0
 
     # compute ideal padding (equal on both sides)
     if rmax - rmin < min_height:
-        rpadding = int((min_height - (rmax - rmin)) / 2)
+        padding = (min_height - (rmax - rmin)) / 2
+        rpadding = int(padding)
+        rmin_padding = math.ceil(padding) - rpadding
     if cmax - cmin < min_width:
-        cpadding = int((min_width - (cmax - cmin)) / 2)
+        padding = (min_width - (cmax - cmin)) / 2
+        cpadding = int(padding)
+        cmin_padding = math.ceil(padding) - cpadding
 
-    rmin -= rpadding
+    rmin -= rpadding + rmin_padding
     rmax += rpadding
-    cmin -= cpadding
+    cmin -= cpadding + cmin_padding
     cmax += cpadding
 
     # account for negative indexing (subtract padding from one side and add it to other)
@@ -101,3 +125,16 @@ def get_unique_colors(arr_im):
 
 # HWC
 # CHW
+
+
+def clip_preprocess_maker(n_px):
+    return Compose(
+        [
+            Resize(n_px, interpolation=3),
+            CenterCrop(n_px),
+            Normalize(
+                (0.48145466, 0.4578275, 0.40821073),
+                (0.26862954, 0.26130258, 0.27577711),
+            ),
+        ]
+    )

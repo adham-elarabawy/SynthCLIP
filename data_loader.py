@@ -12,6 +12,7 @@ from PIL import Image
 import random
 from utils import *
 import albumentations as A
+import albumentations.pytorch
 import cv2
 
 
@@ -81,32 +82,34 @@ class ImageFolder(data.Dataset):
                 p=0.5,
             )
         )
-        bg_transform.append(A.ToTensorV2())
-
+        # bg_transform.append(A.pytorch.ToTensorV2())
 
         ped_transform = []
-        ped_scale = random.uniform(0.2, 1.8)
+        ped_scale = random.uniform(0.1, 1.8)
         if ped_scale <= 1:
-            new_size = (1 / ped_scale) * max(*im_ped.shape[:2])
+            new_size = int((1 / ped_scale) * max(*im_ped.shape[:2]))
             ped_transform.append(
                 A.PadIfNeeded(
                     min_height=new_size,
                     min_width=new_size,
-                    position_type="random",
-                    border_mode=cv2.BORDER_REPLICATE
+                    position="random",
+                    border_mode=cv2.BORDER_REPLICATE,
                 )
             )
-        elif ped_scale < 1:
-            new_size = (1 / ped_scale) * max(*im_ped.shape[:2])
+        elif ped_scale > 1:
+            new_size = int((1 / ped_scale) * max(*im_ped.shape[:2]))
             ped_transform.append(A.RandomCrop(height=new_size, width=new_size))
 
-        ped_transform.append(A.Resize(height=self.bg_size, height=self.bg_size))
+        ped_transform.append(A.Resize(height=self.bg_size, width=self.bg_size))
         ped_transform.append(A.HorizontalFlip(self.flip))
-        ped_transform.append(A.Normalize(
+        ped_transform.append(
+            A.Normalize(
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
-                max_pixel_value=255.0, 
-                p=1.0))
+                max_pixel_value=255.0,
+                p=1.0,
+            )
+        )
 
         norm_transform = []
         norm_transform.append(
@@ -119,19 +122,19 @@ class ImageFolder(data.Dataset):
         )
 
         torch_transform = []
-        torch_transform.append(A.ToTensorV2())
+        torch_transform.append(A.pytorch.ToTensorV2())
 
-            #     def squish_colormask(colormask):
-            # colormask = torch.sum(
-            #     colormask, dim=0, keepdim=True
-            # )  # average across rgb channels
-            # obj_ids = torch.unique(colormask)  # get unique values in mask
-            # obj_ids = obj_ids[obj_ids != 0]
-            # masks = colormask == obj_ids[:, None, None]
-            # bool_mask = torch.any(masks, dim=0, keepdim=True)
-            # out = torch.zeros_like(bool_mask, dtype=torch.float)
-            # out[bool_mask] = 1
-            # return out
+        #     def squish_colormask(colormask):
+        # colormask = torch.sum(
+        #     colormask, dim=0, keepdim=True
+        # )  # average across rgb channels
+        # obj_ids = torch.unique(colormask)  # get unique values in mask
+        # obj_ids = obj_ids[obj_ids != 0]
+        # masks = colormask == obj_ids[:, None, None]
+        # bool_mask = torch.any(masks, dim=0, keepdim=True)
+        # out = torch.zeros_like(bool_mask, dtype=torch.float)
+        # out[bool_mask] = 1
+        # return out
 
         # compose transforms
         bg_transform = A.Compose(bg_transform)
@@ -140,32 +143,30 @@ class ImageFolder(data.Dataset):
         torch_transform = A.Compose(torch_transform)
 
         # apply transforms
-        bg = bg_transform(image=im_bg)['image'] # unnormalized, tensor
-        bg_norm = norm_transform(bg) # normalized, tensor
-        ped_out = ped_transform(image=im_ped, image=im_mask)
-        ped = ped_out['image'] # normalized, arr
-        colormask = ped_out['mask'] # unnormalized, arr
+        bg = bg_transform(image=im_bg)["image"]  # unnormalized, arr
+        bg_norm = norm_transform(image=bg)["image"]  # normalized, arr
+        ped_out = ped_transform(image=im_ped, mask=im_mask)
+        ped = ped_out["image"]  # normalized, arr
+        colormask = ped_out["mask"]  # unnormalized, arr
 
         # get distinct masks from colormask
         colors = get_unique_colors(colormask)
-        colors = colors[np.sum(colors, axis = 1) != 0]
-        ped_masks = torch.zeros((len(colors), im_mask.shape[0], im_mask.shape[1]))
-        combined_mask = torch.zeros((1, im_mask.shape[0], im_mask.shape[1]))
+        colors = colors[np.sum(colors, axis=1) != 0]
+        ped_masks = torch.zeros((len(colors), colormask.shape[0], colormask.shape[1]))
+        combined_mask = torch.zeros((1, colormask.shape[0], colormask.shape[1]))
         for i, color in enumerate(colors):
-            bool_mask = mask_from_rgb_threshold(color, np.array(im_mask)[:, :, :3])
+            bool_mask = mask_from_rgb_threshold(color, np.array(colormask)[:, :, :3])
             bool_mask = torch.from_numpy(bool_mask)
             ped_mask = torch.zeros_like(bool_mask, dtype=torch.float)
             ped_mask[bool_mask] = 1
-            combined_mask[bool_mask] = 1
+            combined_mask[0, bool_mask] = 1
             ped_masks[i] = ped_mask
 
-
-
-        bg = bg # unnormalized tensor
-        bg_norm = norm_transform(bg) # normalized tensor
-        ped = torch_transform(ped) # normalized tensor
-        combined_mask = combined_mask # unnormalized tensor
-        all_masks = ped_mask # unnormalized tensor
+        bg = torch_transform(image=bg)["image"]  # unnormalized tensor
+        bg_norm = torch_transform(image=bg_norm)["image"]  # normalized tensor
+        ped = torch_transform(image=ped)["image"]  # normalized tensor
+        combined_mask = combined_mask  # unnormalized tensor
+        all_masks = ped_masks  # unnormalized tensor
 
         return bg, bg_norm, ped, combined_mask, all_masks
 
